@@ -410,7 +410,7 @@ async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', chunk => { data += chunk as string; });
+    process.stdin.on('data', (chunk: Buffer | string) => { data += typeof chunk === 'string' ? chunk : chunk.toString('utf8'); });
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', reject);
   });
