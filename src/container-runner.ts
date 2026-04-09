@@ -2,17 +2,23 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, spawn } from 'child_process';
+import { ChildProcess, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_RUNTIME,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  K8S_NAMESPACE,
+  K8S_NODE_BEELINK,
+  K8S_NODE_NUC,
+  LITELLM_API_KEY,
+  LITELLM_BASE_URL,
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
@@ -20,6 +26,9 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_RUNTIME_BIN,
+  K8sJobSpec,
+  buildK8sJobManifest,
+  deleteK8sJob,
   hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
@@ -28,7 +37,9 @@ import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
-const onecli = new OneCLI({ url: ONECLI_URL });
+// OneCLI handles service credential injection (GitHub, Gmail OAuth, etc.).
+// It is used in both docker and k8s modes when ONECLI_URL is configured.
+const onecli = ONECLI_URL ? new OneCLI({ url: ONECLI_URL }) : null;
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -252,19 +263,27 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-  const onecliApplied = await onecli.applyContainerConfig(args, {
-    addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
-  });
-  if (onecliApplied) {
-    logger.info({ containerName }, 'OneCLI gateway config applied');
-  } else {
-    logger.warn(
-      { containerName },
-      'OneCLI gateway not reachable — container will have no credentials',
-    );
+  // OneCLI handles service credential injection (GitHub, Gmail OAuth, etc.).
+  if (onecli) {
+    const onecliApplied = await onecli.applyContainerConfig(args, {
+      addHostMapping: false, // Nanoclaw already handles host gateway
+      agent: agentIdentifier,
+    });
+    if (onecliApplied) {
+      logger.info({ containerName }, 'OneCLI gateway config applied');
+    } else {
+      logger.warn(
+        { containerName },
+        'OneCLI gateway not reachable — container will have no credentials',
+      );
+    }
+  }
+
+  // LiteLLM model router: override Anthropic endpoint to route to local Ollama.
+  // Works alongside OneCLI — OneCLI handles service credentials, LiteLLM handles models.
+  if (LITELLM_BASE_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${LITELLM_BASE_URL}`);
+    args.push('-e', `ANTHROPIC_API_KEY=${LITELLM_API_KEY}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -294,6 +313,18 @@ async function buildContainerArgs(
 }
 
 export async function runContainerAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  if (CONTAINER_RUNTIME === 'k8s') {
+    return runK8sJobAgent(group, input, onOutput);
+  }
+  return runDockerAgent(group, input, onProcess, onOutput);
+}
+
+async function runDockerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
@@ -685,6 +716,226 @@ export async function runContainerAgent(
         result: null,
         error: `Container spawn error: ${err.message}`,
       });
+    });
+  });
+}
+
+// ─── Kubernetes Job runner ────────────────────────────────────────────────────
+
+/**
+ * Dispatch an agent invocation as a Kubernetes Job.
+ *
+ * Input delivery: write JSON to the group's IPC directory before creating the
+ * Job. The container entrypoint checks for this file first, avoiding the need
+ * for interactive stdin (which k8s Jobs don't support).
+ *
+ * Output: stream logs via `kubectl logs -f` and parse OUTPUT_START/END_MARKER
+ * pairs exactly as in the docker path.
+ */
+async function runK8sJobAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+
+  const groupDir = resolveGroupFolderPath(group.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  const mounts = buildVolumeMounts(group, input.isMain);
+  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  // k8s names must be ≤63 chars, lowercase, no trailing hyphens
+  const jobName = `nanoclaw-${safeName}-${Date.now()}`.toLowerCase().slice(0, 63);
+  const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+  const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+
+  // Resolve node: per-group config overrides default (beelink for light tasks)
+  const nodeConfig = group.containerConfig?.node;
+  const nodeName =
+    nodeConfig === 'nuc'
+      ? K8S_NODE_NUC
+      : nodeConfig === 'beelink'
+        ? K8S_NODE_BEELINK
+        : K8S_NODE_BEELINK; // default: schedule on beelink
+
+  // Write input to a file the container can read (k8s Jobs have no stdin)
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  const inputFile = path.join(groupIpcDir, 'job-input.json');
+  fs.writeFileSync(inputFile, JSON.stringify(input));
+
+  // Build env for the Job — service creds via OneCLI (if available),
+  // model routing via LiteLLM env vars.
+  const jobEnv: Record<string, string> = {
+    TZ: TIMEZONE,
+  };
+  if (LITELLM_BASE_URL) {
+    jobEnv.ANTHROPIC_BASE_URL = LITELLM_BASE_URL;
+    jobEnv.ANTHROPIC_API_KEY = LITELLM_API_KEY;
+  }
+  // Note: OneCLI service credential injection (GitHub, Gmail OAuth, etc.) is not
+  // yet supported in k8s Job mode. Add credentials via k8s Secrets or extend this
+  // when the OneCLI SDK gains a k8s-compatible env-var API.
+
+  const jobSpec: K8sJobSpec = {
+    jobName,
+    namespace: K8S_NAMESPACE,
+    image: CONTAINER_IMAGE,
+    nodeName,
+    env: jobEnv,
+    mounts,
+    timeoutSeconds: Math.ceil(timeoutMs / 1000),
+  };
+
+  const manifest = buildK8sJobManifest(jobSpec);
+  const manifestJson = JSON.stringify(manifest);
+
+  logger.info(
+    { group: group.name, jobName, nodeName, namespace: K8S_NAMESPACE },
+    'Dispatching k8s Job agent',
+  );
+
+  return new Promise((resolve) => {
+    // Create the Job via kubectl apply (stdin)
+    try {
+      execFileSync('kubectl', ['apply', '-f', '-', '-n', K8S_NAMESPACE], {
+        input: manifestJson,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+      });
+    } catch (err) {
+      logger.error({ err, jobName }, 'Failed to create k8s Job');
+      fs.rmSync(inputFile, { force: true });
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Failed to create k8s Job: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+
+    // Wait for the pod to be running, then stream logs
+    // kubectl logs --follow waits for the pod to exist, then tails it
+    const logProc = spawn(
+      'kubectl',
+      [
+        'logs',
+        '-f',
+        '-n', K8S_NAMESPACE,
+        `job/${jobName}`,
+        '--pod-running-timeout=120s',
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let hadStreamingOutput = false;
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+
+    const parseBuffer = { value: '' };
+
+    logProc.stdout.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+      if (!stdoutTruncated) {
+        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+        if (chunk.length > remaining) {
+          stdout += chunk.slice(0, remaining);
+          stdoutTruncated = true;
+        } else {
+          stdout += chunk;
+        }
+      }
+
+      if (onOutput) {
+        parseBuffer.value += chunk;
+        let startIdx: number;
+        while ((startIdx = parseBuffer.value.indexOf(OUTPUT_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.value.indexOf(OUTPUT_END_MARKER, startIdx);
+          if (endIdx === -1) break;
+          const jsonStr = parseBuffer.value
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
+          parseBuffer.value = parseBuffer.value.slice(endIdx + OUTPUT_END_MARKER.length);
+          try {
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionId) newSessionId = parsed.newSessionId;
+            hadStreamingOutput = true;
+            resetTimeout();
+            outputChain = outputChain.then(() => onOutput(parsed));
+          } catch (err) {
+            logger.warn({ err }, 'Failed to parse k8s streamed output chunk');
+          }
+        }
+      }
+    });
+
+    logProc.stderr.on('data', (data: Buffer) => {
+      const chunk = data.toString();
+      for (const line of chunk.trim().split('\n')) {
+        if (line) logger.debug({ job: jobName }, line);
+      }
+      stderr += chunk.slice(0, CONTAINER_MAX_OUTPUT_SIZE - stderr.length);
+    });
+
+    let timedOut = false;
+
+    const killOnTimeout = () => {
+      timedOut = true;
+      logProc.kill('SIGTERM');
+      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* best-effort */ }
+    };
+    let timeout = setTimeout(killOnTimeout, timeoutMs);
+    const resetTimeout = () => { clearTimeout(timeout); timeout = setTimeout(killOnTimeout, timeoutMs); };
+
+    logProc.on('close', (code) => {
+      clearTimeout(timeout);
+      const duration = Date.now() - startTime;
+
+      // Clean up input file and Job (ttlSecondsAfterFinished handles the Job,
+      // but delete eagerly to free resources and avoid log noise)
+      fs.rmSync(inputFile, { force: true });
+      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* already cleaned up */ }
+
+      if (timedOut) {
+        if (hadStreamingOutput) {
+          outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        } else {
+          resolve({ status: 'error', result: null, error: `k8s Job timed out after ${configTimeout}ms` });
+        }
+        return;
+      }
+
+      logger.info({ group: group.name, jobName, duration, code }, 'k8s Job completed');
+
+      if (onOutput) {
+        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        return;
+      }
+
+      // Legacy: parse last output marker from accumulated stdout
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+        resolve(JSON.parse(jsonLine) as ContainerOutput);
+      } catch (err) {
+        resolve({ status: 'error', result: null, error: `Failed to parse k8s Job output: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    });
+
+    logProc.on('error', (err) => {
+      clearTimeout(timeout);
+      fs.rmSync(inputFile, { force: true });
+      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* best-effort */ }
+      resolve({ status: 'error', result: null, error: `kubectl logs error: ${err.message}` });
     });
   });
 }

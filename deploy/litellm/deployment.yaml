@@ -1,0 +1,119 @@
+---
+# Namespace for all nanoclaw k8s resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nanoclaw
+
+---
+# ConfigMap: LiteLLM routing config (mounted into the proxy pod)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: nanoclaw
+data:
+  config.yaml: |
+    model_list:
+      - model_name: claude-haiku-4-5-20251001
+        litellm_params:
+          model: ollama/llama3.2:3b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+      - model_name: claude-haiku-4-5
+        litellm_params:
+          model: ollama/llama3.2:3b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+      - model_name: claude-sonnet-4-5
+        litellm_params:
+          model: ollama/qwen2.5:14b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+      - model_name: claude-sonnet-4-6
+        litellm_params:
+          model: ollama/qwen2.5:14b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+      - model_name: claude-opus-4-6
+        litellm_params:
+          model: ollama/qwen2.5:32b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+      - model_name: "*"
+        litellm_params:
+          model: ollama/qwen2.5:14b
+          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+    litellm_settings:
+      master_key: "sk-local"
+      drop_params: true
+      request_timeout: 600
+
+---
+# LiteLLM proxy — runs on the NUC (close to Ollama)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: nanoclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: intel-nuc
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-latest
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+            - --port
+            - "4000"
+          ports:
+            - containerPort: 4000
+          volumeMounts:
+            - name: config
+              mountPath: /etc/litellm
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config
+
+---
+# ClusterIP service — agents reach LiteLLM at litellm-service.nanoclaw:4000
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-service
+  namespace: nanoclaw
+spec:
+  selector:
+    app: litellm
+  ports:
+    - port: 4000
+      targetPort: 4000
+
+---
+# Service that exposes Ollama (running on the NUC host) into the cluster.
+# Ollama listens on the NUC's host network; this ExternalName service routes
+# cluster DNS to it without moving Ollama into a container.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: nanoclaw
+spec:
+  type: ExternalName
+  # Points to the NUC's node IP — update if address changes
+  externalName: intel-nuc.local
+  ports:
+    - port: 11434

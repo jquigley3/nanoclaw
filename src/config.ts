@@ -9,6 +9,12 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
+  'CONTAINER_RUNTIME',
+  'K8S_NAMESPACE',
+  'K8S_NODE_BEELINK',
+  'K8S_NODE_NUC',
+  'LITELLM_BASE_URL',
+  'LITELLM_API_KEY',
   'TZ',
 ]);
 
@@ -52,6 +58,27 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   10,
 ); // 10MB default
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
+
+// Container runtime: 'docker' (default) or 'k8s' (dispatch as Kubernetes Jobs)
+export const CONTAINER_RUNTIME =
+  process.env.CONTAINER_RUNTIME || envConfig.CONTAINER_RUNTIME || 'docker';
+
+// Kubernetes configuration (only used when CONTAINER_RUNTIME=k8s)
+export const K8S_NAMESPACE =
+  process.env.K8S_NAMESPACE || envConfig.K8S_NAMESPACE || 'nanoclaw';
+// Node names in the k3s cluster — used for nodeSelector
+export const K8S_NODE_BEELINK =
+  process.env.K8S_NODE_BEELINK || envConfig.K8S_NODE_BEELINK || 'beelink';
+export const K8S_NODE_NUC =
+  process.env.K8S_NODE_NUC || envConfig.K8S_NODE_NUC || 'intel-nuc';
+
+// LiteLLM proxy — Anthropic-compatible endpoint routing to local Ollama.
+// When set, containers use this as ANTHROPIC_BASE_URL instead of OneCLI.
+export const LITELLM_BASE_URL =
+  process.env.LITELLM_BASE_URL || envConfig.LITELLM_BASE_URL;
+// LiteLLM API key (used as ANTHROPIC_API_KEY inside containers; LiteLLM ignores it)
+export const LITELLM_API_KEY =
+  process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || 'sk-local';
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
