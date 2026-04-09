@@ -6,7 +6,8 @@ metadata:
   name: nanoclaw
 
 ---
-# ConfigMap: LiteLLM routing config (mounted into the proxy pod)
+# ConfigMap: LiteLLM routing config
+# Ollama runs in the 'ai' namespace as ClusterIP service ollama.ai.svc.cluster.local:11434
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,37 +16,41 @@ metadata:
 data:
   config.yaml: |
     model_list:
+      # Haiku → fast/cheap tasks → gemma2:2b (1.6GB, very fast)
       - model_name: claude-haiku-4-5-20251001
         litellm_params:
-          model: ollama/llama3.2:3b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/gemma2:2b
+          api_base: http://ollama.ai.svc.cluster.local:11434
       - model_name: claude-haiku-4-5
         litellm_params:
-          model: ollama/llama3.2:3b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/gemma2:2b
+          api_base: http://ollama.ai.svc.cluster.local:11434
+      # Sonnet → standard tasks → qwen3:8b (5.2GB, good quality)
       - model_name: claude-sonnet-4-5
         litellm_params:
-          model: ollama/qwen2.5:14b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/qwen3:8b
+          api_base: http://ollama.ai.svc.cluster.local:11434
       - model_name: claude-sonnet-4-6
         litellm_params:
-          model: ollama/qwen2.5:14b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/qwen3:8b
+          api_base: http://ollama.ai.svc.cluster.local:11434
+      # Opus → complex tasks → qwen3:8b (best available)
       - model_name: claude-opus-4-6
         litellm_params:
-          model: ollama/qwen2.5:32b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/qwen3:8b
+          api_base: http://ollama.ai.svc.cluster.local:11434
+      # Catch-all
       - model_name: "*"
         litellm_params:
-          model: ollama/qwen2.5:14b
-          api_base: http://ollama-service.nanoclaw.svc.cluster.local:11434
+          model: ollama/qwen3:8b
+          api_base: http://ollama.ai.svc.cluster.local:11434
     litellm_settings:
       master_key: "sk-local"
       drop_params: true
       request_timeout: 600
 
 ---
-# LiteLLM proxy — runs on the NUC (close to Ollama)
+# LiteLLM proxy — any node is fine, it's just a routing layer
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -61,8 +66,6 @@ spec:
       labels:
         app: litellm
     spec:
-      nodeSelector:
-        kubernetes.io/hostname: intel-nuc
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:main-latest
@@ -89,7 +92,7 @@ spec:
             name: litellm-config
 
 ---
-# ClusterIP service — agents reach LiteLLM at litellm-service.nanoclaw:4000
+# ClusterIP service — agents use http://litellm-service.nanoclaw.svc.cluster.local:4000
 apiVersion: v1
 kind: Service
 metadata:
@@ -101,19 +104,3 @@ spec:
   ports:
     - port: 4000
       targetPort: 4000
-
----
-# Service that exposes Ollama (running on the NUC host) into the cluster.
-# Ollama listens on the NUC's host network; this ExternalName service routes
-# cluster DNS to it without moving Ollama into a container.
-apiVersion: v1
-kind: Service
-metadata:
-  name: ollama-service
-  namespace: nanoclaw
-spec:
-  type: ExternalName
-  # Points to the NUC's node IP — update if address changes
-  externalName: intel-nuc.local
-  ports:
-    - port: 11434
