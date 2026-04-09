@@ -45,16 +45,15 @@ spec:
         - name: kaniko
           image: gcr.io/kaniko-project/executor:latest
           args:
-            - --context=dir:///buildcontext
-            - --dockerfile=/buildcontext/Dockerfile
+            - --context=dir:///workspace
+            - --dockerfile=/workspace/Dockerfile
             - --destination=192.168.2.11:32500/nanoclaw-agent:latest
             - --insecure  # local registry has no TLS
             - --insecure-pull
-            - --cache=true
-            - --cache-repo=192.168.2.11:32500/nanoclaw-agent-cache
+            - --no-cache  # skip cache on first build; re-enable after registry verified
           volumeMounts:
             - name: buildcontext
-              mountPath: /buildcontext
+              mountPath: /workspace  # kaniko resolves COPY paths from /workspace
           resources:
             requests:
               memory: "512Mi"
