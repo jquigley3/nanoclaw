@@ -33,7 +33,7 @@ spec:
         - name: kaniko
           image: gcr.io/kaniko-project/executor:latest
           args:
-            - --context=dir:///workspace
+            - --context=dir:///workspace/container
             - --dockerfile=/workspace/container/Dockerfile
             - --destination=192.168.2.11:32500/nanoclaw-agent:latest
             - --insecure  # local registry has no TLS
