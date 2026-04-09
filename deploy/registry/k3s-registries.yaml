@@ -1,0 +1,19 @@
+# k3s mirror config — allow pulling from the in-cluster registry without TLS.
+#
+# The registry pod runs on beelink, exposed as NodePort 32500.
+# containerd on each node pulls images from the host network address.
+#
+# Apply to BOTH nodes:
+#   sudo tee /etc/rancher/k3s/registries.yaml < deploy/registry/k3s-registries.yaml
+#   sudo systemctl restart k3s          # beelink (control-plane)
+#
+#   ssh intel-nuc sudo tee /etc/rancher/k3s/registries.yaml < deploy/registry/k3s-registries.yaml
+#   ssh intel-nuc sudo systemctl restart k3s-agent
+mirrors:
+  "192.168.2.11:32500":
+    endpoint:
+      - "http://192.168.2.11:32500"
+configs:
+  "192.168.2.11:32500":
+    tls:
+      insecure_skip_verify: true

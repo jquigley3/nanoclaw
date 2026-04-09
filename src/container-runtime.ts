@@ -173,9 +173,8 @@ export function buildK8sJobManifest(spec: K8sJobSpec): object {
             {
               name: 'agent',
               image: spec.image,
-              // imagePullPolicy Never: image is imported directly into containerd,
-              // not pulled from a registry (ctr images import nanoclaw-agent.tar).
-              imagePullPolicy: 'Never',
+              // IfNotPresent: pull from local registry on first run, use cached thereafter.
+              imagePullPolicy: 'IfNotPresent',
               env: envList,
               volumeMounts,
             },

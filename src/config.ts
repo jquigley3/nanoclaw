@@ -47,8 +47,13 @@ export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
+// In k8s mode, image is pulled from the in-cluster registry built by kaniko.
+// In docker mode, image must be built locally with ./container/build.sh.
 export const CONTAINER_IMAGE =
-  process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+  process.env.CONTAINER_IMAGE ||
+  (process.env.CONTAINER_RUNTIME === 'k8s'
+    ? '192.168.2.11:32500/nanoclaw-agent:latest'
+    : 'nanoclaw-agent:latest');
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,

@@ -745,7 +745,9 @@ async function runK8sJobAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   // k8s names must be ≤63 chars, lowercase, no trailing hyphens
-  const jobName = `nanoclaw-${safeName}-${Date.now()}`.toLowerCase().slice(0, 63);
+  const jobName = `nanoclaw-${safeName}-${Date.now()}`
+    .toLowerCase()
+    .slice(0, 63);
   const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
   const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
 
@@ -820,7 +822,8 @@ async function runK8sJobAgent(
       [
         'logs',
         '-f',
-        '-n', K8S_NAMESPACE,
+        '-n',
+        K8S_NAMESPACE,
         `job/${jobName}`,
         '--pod-running-timeout=120s',
       ],
@@ -851,13 +854,17 @@ async function runK8sJobAgent(
       if (onOutput) {
         parseBuffer.value += chunk;
         let startIdx: number;
-        while ((startIdx = parseBuffer.value.indexOf(OUTPUT_START_MARKER)) !== -1) {
+        while (
+          (startIdx = parseBuffer.value.indexOf(OUTPUT_START_MARKER)) !== -1
+        ) {
           const endIdx = parseBuffer.value.indexOf(OUTPUT_END_MARKER, startIdx);
           if (endIdx === -1) break;
           const jsonStr = parseBuffer.value
             .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
             .trim();
-          parseBuffer.value = parseBuffer.value.slice(endIdx + OUTPUT_END_MARKER.length);
+          parseBuffer.value = parseBuffer.value.slice(
+            endIdx + OUTPUT_END_MARKER.length,
+          );
           try {
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) newSessionId = parsed.newSessionId;
@@ -884,10 +891,17 @@ async function runK8sJobAgent(
     const killOnTimeout = () => {
       timedOut = true;
       logProc.kill('SIGTERM');
-      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* best-effort */ }
+      try {
+        deleteK8sJob(jobName, K8S_NAMESPACE);
+      } catch {
+        /* best-effort */
+      }
     };
     let timeout = setTimeout(killOnTimeout, timeoutMs);
-    const resetTimeout = () => { clearTimeout(timeout); timeout = setTimeout(killOnTimeout, timeoutMs); };
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(killOnTimeout, timeoutMs);
+    };
 
     logProc.on('close', (code) => {
       clearTimeout(timeout);
@@ -896,21 +910,36 @@ async function runK8sJobAgent(
       // Clean up input file and Job (ttlSecondsAfterFinished handles the Job,
       // but delete eagerly to free resources and avoid log noise)
       fs.rmSync(inputFile, { force: true });
-      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* already cleaned up */ }
+      try {
+        deleteK8sJob(jobName, K8S_NAMESPACE);
+      } catch {
+        /* already cleaned up */
+      }
 
       if (timedOut) {
         if (hadStreamingOutput) {
-          outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+          outputChain.then(() =>
+            resolve({ status: 'success', result: null, newSessionId }),
+          );
         } else {
-          resolve({ status: 'error', result: null, error: `k8s Job timed out after ${configTimeout}ms` });
+          resolve({
+            status: 'error',
+            result: null,
+            error: `k8s Job timed out after ${configTimeout}ms`,
+          });
         }
         return;
       }
 
-      logger.info({ group: group.name, jobName, duration, code }, 'k8s Job completed');
+      logger.info(
+        { group: group.name, jobName, duration, code },
+        'k8s Job completed',
+      );
 
       if (onOutput) {
-        outputChain.then(() => resolve({ status: 'success', result: null, newSessionId }));
+        outputChain.then(() =>
+          resolve({ status: 'success', result: null, newSessionId }),
+        );
         return;
       }
 
@@ -920,22 +949,36 @@ async function runK8sJobAgent(
         const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+          jsonLine = stdout
+            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+            .trim();
         } else {
           const lines = stdout.trim().split('\n');
           jsonLine = lines[lines.length - 1];
         }
         resolve(JSON.parse(jsonLine) as ContainerOutput);
       } catch (err) {
-        resolve({ status: 'error', result: null, error: `Failed to parse k8s Job output: ${err instanceof Error ? err.message : String(err)}` });
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Failed to parse k8s Job output: ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     });
 
     logProc.on('error', (err) => {
       clearTimeout(timeout);
       fs.rmSync(inputFile, { force: true });
-      try { deleteK8sJob(jobName, K8S_NAMESPACE); } catch { /* best-effort */ }
-      resolve({ status: 'error', result: null, error: `kubectl logs error: ${err.message}` });
+      try {
+        deleteK8sJob(jobName, K8S_NAMESPACE);
+      } catch {
+        /* best-effort */
+      }
+      resolve({
+        status: 'error',
+        result: null,
+        error: `kubectl logs error: ${err.message}`,
+      });
     });
   });
 }

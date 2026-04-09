@@ -1,0 +1,55 @@
+---
+# Kaniko Job — builds nanoclaw-agent from GitHub and pushes to local registry.
+# Run with: kubectl apply -f deploy/build/kaniko-build.yaml
+# Watch:    kubectl logs -f -n nanoclaw job/nanoclaw-build
+# Re-run:   kubectl delete job nanoclaw-build -n nanoclaw && kubectl apply -f ...
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nanoclaw-build
+  namespace: nanoclaw
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: beelink
+      initContainers:
+        # Clone the repo so kaniko has the full build context
+        - name: git-clone
+          image: alpine/git:latest
+          command:
+            - git
+            - clone
+            - --depth=1
+            - https://github.com/jquigley3/nanoclaw.git
+            - /workspace
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:latest
+          args:
+            - --context=dir:///workspace
+            - --dockerfile=/workspace/container/Dockerfile
+            - --destination=192.168.2.11:32500/nanoclaw-agent:latest
+            - --insecure  # local registry has no TLS
+            - --insecure-pull
+            - --cache=true
+            - --cache-repo=192.168.2.11:32500/nanoclaw-agent-cache
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+      volumes:
+        - name: workspace
+          emptyDir: {}
