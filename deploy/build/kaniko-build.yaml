@@ -17,7 +17,7 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: beelink
       initContainers:
-        # Clone the repo so kaniko has the full build context
+        # 1. Clone the full repo
         - name: git-clone
           image: alpine/git:latest
           command:
@@ -25,24 +25,36 @@ spec:
             - clone
             - --depth=1
             - https://github.com/jquigley3/nanoclaw.git
-            - /workspace
+            - /repo
           volumeMounts:
-            - name: workspace
-              mountPath: /workspace
+            - name: repo
+              mountPath: /repo
+        # 2. Stage just the container/ subdirectory as the build context
+        - name: prepare-context
+          image: busybox:stable
+          command:
+            - sh
+            - -c
+            - cp -r /repo/container/. /buildcontext/
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+            - name: buildcontext
+              mountPath: /buildcontext
       containers:
         - name: kaniko
           image: gcr.io/kaniko-project/executor:latest
           args:
-            - --context=dir:///workspace/container
-            - --dockerfile=/workspace/container/Dockerfile
+            - --context=dir:///buildcontext
+            - --dockerfile=/buildcontext/Dockerfile
             - --destination=192.168.2.11:32500/nanoclaw-agent:latest
             - --insecure  # local registry has no TLS
             - --insecure-pull
             - --cache=true
             - --cache-repo=192.168.2.11:32500/nanoclaw-agent-cache
           volumeMounts:
-            - name: workspace
-              mountPath: /workspace
+            - name: buildcontext
+              mountPath: /buildcontext
           resources:
             requests:
               memory: "512Mi"
@@ -51,5 +63,7 @@ spec:
               memory: "2Gi"
               cpu: "2"
       volumes:
-        - name: workspace
+        - name: repo
+          emptyDir: {}
+        - name: buildcontext
           emptyDir: {}
