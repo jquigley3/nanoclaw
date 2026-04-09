@@ -145,7 +145,6 @@ function buildVolumeMounts(
     }
   }
 
-
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -157,7 +156,6 @@ function buildVolumeMounts(
     containerPath: '/workspace/ipc',
     readonly: false,
   });
-
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
@@ -683,7 +681,6 @@ async function runK8sJobAgent(
   const groupIpcDir = resolveGroupIpcPath(group.folder);
   const inputFile = path.join(groupIpcDir, 'job-input.json');
   fs.writeFileSync(inputFile, JSON.stringify(input));
-
 
   // Build env for the Job — service creds via OneCLI (if available),
   // model routing via LiteLLM env vars.

@@ -359,21 +359,31 @@ async function runQuery(
       model,
       max_tokens: 4096,
       system: systemPrompt,
-      tools: TOOLS,
+      // Tools disabled: smaller Ollama models (llama3.2:3b) emit tool-call tokens
+      // that LiteLLM cannot convert back to Anthropic tool_use blocks, resulting
+      // in empty responses. Re-enable when using a model with verified tool support.
+      // tools: TOOLS,
       messages,
     });
 
-    log(`stop_reason=${response.stop_reason}, blocks=${response.content.length}`);
+    const blockTypes = response.content.map(b => b.type).join(',');
+    log(`stop_reason=${response.stop_reason}, blocks=${response.content.length} [${blockTypes}]`);
 
     // Append assistant response to working message list
     messages.push({ role: 'assistant', content: response.content });
 
-    if (response.stop_reason === 'end_turn' || response.stop_reason === 'max_tokens') {
+    // Check for tool_use blocks regardless of stop_reason — some LiteLLM/Ollama
+    // combinations return stop_reason='end_turn' even when tool calls are present.
+    const hasToolUse = response.content.some(b => b.type === 'tool_use');
+
+    if ((response.stop_reason === 'end_turn' || response.stop_reason === 'max_tokens') && !hasToolUse) {
       const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
-      return { result: textBlock?.text ?? null, updatedHistory: messages };
+      const text = textBlock?.text?.trim() ?? null;
+      log(`End turn result: ${text ? text.slice(0, 100) : '(empty)'}`);
+      return { result: text || null, updatedHistory: messages };
     }
 
-    if (response.stop_reason === 'tool_use') {
+    if (response.stop_reason === 'tool_use' || hasToolUse) {
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
       for (const block of response.content) {

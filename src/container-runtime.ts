@@ -169,11 +169,16 @@ export function buildK8sJobManifest(spec: K8sJobSpec): object {
                 },
               }
             : {}),
+          securityContext: {
+            runAsUser: 1001,
+            runAsGroup: 1001,
+            fsGroup: 1001,
+          },
           containers: [
             {
               name: 'agent',
               image: spec.image,
-              imagePullPolicy: 'Always',
+              imagePullPolicy: 'IfNotPresent',
               env: envList,
               volumeMounts,
             },
