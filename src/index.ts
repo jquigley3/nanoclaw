@@ -5,10 +5,12 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_RUNTIME,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  K8S_NAMESPACE,
   MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
@@ -27,6 +29,7 @@ import {
 } from './container-runner.js';
 import {
   cleanupOrphans,
+  cleanupOrphanK8sJobs,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
@@ -564,8 +567,13 @@ function recoverPendingMessages(): void {
 }
 
 function ensureContainerSystemRunning(): void {
-  ensureContainerRuntimeRunning();
-  cleanupOrphans();
+  if (CONTAINER_RUNTIME === 'k8s') {
+    // k8s mode: no local docker daemon needed; clean up stale Jobs instead
+    cleanupOrphanK8sJobs(K8S_NAMESPACE);
+  } else {
+    ensureContainerRuntimeRunning();
+    cleanupOrphans();
+  }
 }
 
 async function main(): Promise<void> {
