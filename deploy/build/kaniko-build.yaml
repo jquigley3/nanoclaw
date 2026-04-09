@@ -50,7 +50,7 @@ spec:
             - --destination=192.168.2.11:32500/nanoclaw-agent:latest
             - --insecure  # local registry has no TLS
             - --insecure-pull
-            - --no-cache  # skip cache on first build; re-enable after registry verified
+            - --cache=false
           volumeMounts:
             - name: buildcontext
               mountPath: /workspace  # kaniko resolves COPY paths from /workspace
